@@ -4,14 +4,18 @@
 # À lancer depuis la racine de ton dépôt, cluster démarré :
 #   curl -fsSL https://raw.githubusercontent.com/DeepSnowNeeL/devops-avance-support/main/verifier.sh | bash
 #
-# Le script ne modifie rien dans ton dépôt. Dans le cluster, il fait une seule action :
-# il supprime le déploiement "api" de "dev" pour constater qu'ArgoCD le recrée (case 4).
+# Le script ne modifie rien dans ton dépôt. Dans le cluster, il fait trois actions :
+#   - case 4  : il supprime le déploiement "api" de "dev" pour constater qu'ArgoCD le recrée ;
+#   - case 8  : il règle l'API de "dev" à 100 % d'erreurs le temps que l'alerte se déclenche,
+#               puis la remet à 0 % ;
+#   - case 10 : il tente de créer deux pods en essai à blanc (--dry-run=server) : rien n'est créé.
 #
 # Tout le script est dans des fonctions, appelées par la dernière ligne : un téléchargement
 # interrompu n'exécute rien.
 
 CTX="kind-plateforme"
 ATTENTE_SELF_HEAL="${ATTENTE_SELF_HEAL:-180}" # secondes
+ATTENTE_ALERTE="${ATTENTE_ALERTE:-240}"       # secondes
 INTERVALLE="${INTERVALLE:-3}"                 # secondes entre deux essais
 KUSTOMIZATION_DEV="deploy/overlays/dev/kustomization.yaml"
 RAISON=""
@@ -105,13 +109,20 @@ case_4() {
   return 1
 }
 
+# Tag déployé en dev selon git, et commit qui l'a écrit (même si le fichier a changé depuis).
+tag_dev() {
+  sed -n 's/^[[:space:]]*newTag:[[:space:]]*//p' "$KUSTOMIZATION_DEV" 2>/dev/null | tr -d "\"'\r" | head -n 1
+}
+commit_du_tag() {
+  git log -1 --format="$2" -S"newTag: $1" -- "$KUSTOMIZATION_DEV" </dev/null 2>/dev/null
+}
+
 case_5() {
   local tag image auteur
-  tag="$(sed -n 's/^[[:space:]]*newTag:[[:space:]]*//p' "$KUSTOMIZATION_DEV" 2>/dev/null | tr -d "\"'\r" | head -n 1)"
+  tag="$(tag_dev)"
   [ -n "$tag" ] || { RAISON="aucun newTag dans $KUSTOMIZATION_DEV"; return 1; }
   [ "$tag" != "initial" ] || { RAISON="le tag de dev est encore « initial » : le pipeline n'a jamais déployé"; return 1; }
-  # Le commit qui a écrit ce tag, même si le fichier a été modifié depuis pour autre chose.
-  auteur="$(git log -1 --format=%an -S"newTag: $tag" -- "$KUSTOMIZATION_DEV" </dev/null 2>/dev/null)"
+  auteur="$(commit_du_tag "$tag" %an)"
   [ "$auteur" = "pipeline-ci" ] \
     || { RAISON="le tag « $tag » a été écrit dans git par « $auteur », attendu « pipeline-ci »"; return 1; }
   image="$(k -n dev get deploy api -o jsonpath='{.spec.template.spec.containers[0].image}')"
@@ -138,6 +149,84 @@ case_6() {
   return 1
 }
 
+case_7() {
+  local f trouve=""
+  for f in $(git grep -l 'grafana_dashboard' -- deploy </dev/null 2>/dev/null); do
+    grep -q 'http_requests_total' "$f" && trouve="$f"
+  done
+  [ -n "$trouve" ] \
+    || { RAISON="aucun ConfigMap commité sous deploy/ avec l'étiquette grafana_dashboard et une requête sur http_requests_total"; return 1; }
+  k get configmap -A -l grafana_dashboard -o jsonpath='{range .items[*]}{.data}{end}' | grep -q 'http_requests_total' \
+    || { RAISON="le tableau de bord n'est pas dans le cluster (ArgoCD l'a-t-il synchronisé ?)"; return 1; }
+  local dispo
+  dispo="$(k -n supervision get deploy -l app.kubernetes.io/name=grafana -o jsonpath='{.items[*].status.availableReplicas}')"
+  [ "${dispo:-0}" -ge 1 ] 2>/dev/null \
+    || { RAISON="Grafana n'est pas disponible dans le namespace supervision"; return 1; }
+}
+
+PROMETHEUS="/api/v1/namespaces/supervision/services/http:prometheus-operated:9090/proxy"
+API_DEV="/api/v1/namespaces/dev/services/http:api:80/proxy"
+
+etat_alerte() {
+  # Une alerte par ligne, puis l'état de celle qui nous intéresse (sans dépendre de jq).
+  k get --raw "$PROMETHEUS/api/v1/alerts" | tr -d '\n' | sed 's/},{"labels"/}\
+{"labels"/g' \
+    | grep '"alertname":"BudgetErreurApi"' | grep -o '"state":"[a-z]*"' \
+    | sed 's/"state":"\([a-z]*\)"/\1/' | head -n 1
+}
+
+case_8() {
+  k get --raw "$PROMETHEUS/api/v1/rules" | grep -q '"name":"BudgetErreurApi"' \
+    || { RAISON="aucune alerte BudgetErreurApi chargée dans Prometheus (namespace supervision)"; return 1; }
+  [ "$(etat_alerte)" != "firing" ] \
+    || { RAISON="l'alerte BudgetErreurApi est déjà déclenchée avant le test : attends qu'elle retombe (2 à 3 minutes) et relance"; return 1; }
+  k get --raw "$API_DEV/chaos?erreurs=1" >/dev/null \
+    || { RAISON="impossible de joindre /chaos sur le service api de dev"; return 1; }
+  local ecoule=0 resultat=1
+  while [ "$ecoule" -lt "$ATTENTE_ALERTE" ]; do
+    for _ in 1 2 3 4 5; do k get --raw "$API_DEV/" >/dev/null; done
+    if [ "$(etat_alerte)" = "firing" ]; then resultat=0; break; fi
+    sleep "$INTERVALLE"
+    ecoule=$((ecoule + INTERVALLE))
+  done
+  k get --raw "$API_DEV/chaos?erreurs=0" >/dev/null
+  [ "$resultat" = 0 ] \
+    || RAISON="100 % d'erreurs injectées pendant ${ATTENTE_ALERTE} s, l'alerte BudgetErreurApi ne s'est pas déclenchée"
+  return "$resultat"
+}
+
+case_9() {
+  local wf
+  wf="$(suivis '.github/workflows/*.yml' '.github/workflows/*.yaml')"
+  [ -n "$wf" ] || { RAISON="aucun workflow dans .github/workflows/"; return 1; }
+  # shellcheck disable=SC2086
+  grep -qi 'trivy' $wf || { RAISON="aucun scan Trivy dans le workflow"; return 1; }
+  # shellcheck disable=SC2086
+  grep -Eq "exit-code:[[:space:]]*[\"']?1|--exit-code[[:space:]]+1" $wf \
+    || { RAISON="le scan Trivy n'est pas bloquant (exit-code 1)"; return 1; }
+  local introduction deploiement tag
+  introduction="$(git log -1 --format=%H -G "[Tt]rivy" -- .github/workflows </dev/null 2>/dev/null)"
+  tag="$(tag_dev)"
+  deploiement="$(commit_du_tag "$tag" %H)"
+  [ -n "$deploiement" ] && [ "$(commit_du_tag "$tag" %an)" = "pipeline-ci" ] \
+    || { RAISON="l'image de dev n'a pas été déployée par le pipeline"; return 1; }
+  [ "$introduction" != "$deploiement" ] && git merge-base --is-ancestor "$introduction" "$deploiement" </dev/null 2>/dev/null \
+    || { RAISON="l'image de dev a été déployée avant la dernière modification du scan : pousse un commit dans app/ pour qu'elle passe le scan"; return 1; }
+}
+
+case_10() {
+  local essai="verif-$$" refus
+  local conforme='{"spec":{"containers":[{"name":"verif","image":"nginx:1.27","resources":{"requests":{"cpu":"10m","memory":"16Mi"},"limits":{"cpu":"100m","memory":"64Mi"}}}]}}'
+  refus="$(kubectl --context "$CTX" --request-timeout=8s -n dev run "$essai" --image=nginx:1.27 --dry-run=server </dev/null 2>&1)" \
+    && { RAISON="un pod sans resources.limits est accepté dans dev"; return 1; }
+  case "$refus" in
+    *admission*) ;;
+    *) RAISON="l'essai n'a pas pu être fait : $(printf '%s' "$refus" | head -n 1)"; return 1 ;;
+  esac
+  k -n dev run "$essai" --image=nginx:1.27 --dry-run=server --overrides="$conforme" >/dev/null \
+    || { RAISON="un pod conforme (requests et limits déclarées) est refusé lui aussi : la politique refuse tout"; return 1; }
+}
+
 LIBELLES="Cluster et ArgoCD issus de Terraform
 Module et variables Terraform
 Application en dev et prod par ArgoCD
@@ -148,17 +237,16 @@ Tableau de bord RED
 SLO et alerte
 Scan d'images bloquant
 Politique d'admission"
-CASES_ACTIVES=6
-# Ordre d'évaluation : la case 4 supprime un déploiement, elle passe donc en dernier pour que
-# son échec ne fasse pas tomber les cases qui lisent ce déploiement. L'affichage reste dans
-# l'ordre de la grille.
-ORDRE="1 2 3 5 6 4"
+# Ordre d'évaluation : les cases qui agissent sur la plateforme passent en dernier (8 injecte
+# des erreurs, 4 supprime un déploiement), pour que leur échec ne fasse pas tomber les autres.
+# L'affichage reste dans l'ordre de la grille.
+ORDRE="1 2 3 5 6 7 9 10 8 4"
 
 main() {
   verifier_prerequis
-  echo "Vérification de la plateforme (cluster $CTX)"
+  echo "Vérification de la plateforme (cluster $CTX). Compte deux à quatre minutes."
   echo
-  local n code="" points=0 libelle ok
+  local n code="" points=0 libelle ok depot commit
   for n in $ORDRE; do
     RAISON=""
     if "case_$n"; then eval "ok_$n=1"; else eval "ok_$n=0"; fi
@@ -166,34 +254,28 @@ main() {
   done
   n=1
   while [ "$n" -le 10 ]; do
-    libelle="$(printf '%s
-' "$LIBELLES" | sed -n "${n}p")"
-    if [ "$n" -gt "$CASES_ACTIVES" ]; then
-      printf '[ -- ] %2d. %s (seconde journée)
-' "$n" "$libelle"
-      code="${code}0"
+    libelle="$(printf '%s\n' "$LIBELLES" | sed -n "${n}p")"
+    eval "ok=\$ok_$n"
+    if [ "$ok" = 1 ]; then
+      printf '[ OK ] %2d. %s\n' "$n" "$libelle"
+      code="${code}1"
+      points=$((points + 2))
     else
-      eval "ok=\$ok_$n"
-      if [ "$ok" = 1 ]; then
-        printf '[ OK ] %2d. %s
-' "$n" "$libelle"
-        code="${code}1"
-        points=$((points + 2))
-      else
-        eval "RAISON=\$raison_$n"
-        printf '[ECHEC] %2d. %s
-         %s
-' "$n" "$libelle" "$RAISON"
-        code="${code}0"
-      fi
+      eval "RAISON=\$raison_$n"
+      printf '[ECHEC] %2d. %s\n         %s\n' "$n" "$libelle" "$RAISON"
+      code="${code}0"
     fi
     n=$((n + 1))
   done
+  depot="$(git remote get-url origin </dev/null 2>/dev/null)"
+  commit="$(git rev-parse --short=7 HEAD </dev/null)"
   echo
-  echo "Dépôt : $(git remote get-url origin </dev/null 2>/dev/null) @ $(git rev-parse --short=7 HEAD </dev/null)"
+  echo "Dépôt : $depot @ $commit"
   echo "Date  : $(date '+%Y-%m-%d %H:%M')"
   echo "Score : $points/20"
   echo "Code : $code"
+  echo
+  echo "Relevé : $code $depot $commit"
 }
 
 main "$@"
