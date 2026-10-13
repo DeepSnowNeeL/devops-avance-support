@@ -54,7 +54,9 @@ plateforme qu'il ne sait pas expliquer n'est pas considérée comme son travail.
 - Dépôt GitHub public, pipeline GitHub Actions, images dans `ghcr.io`.
 - Noms imposés, sur lesquels le script de vérification s'appuie : namespaces `argocd`, `dev`,
   `prod` ; déploiement et service `api` ; applications ArgoCD `api-dev` et `api-prod` ; auteur
-  des commits du pipeline `pipeline-ci` ; secret `api-secret`, clé `JETON`.
+  des commits du pipeline `pipeline-ci` ; secret `api-secret`, clé `JETON` ; namespace de la
+  supervision `supervision` ; alerte `BudgetErreurApi` ; tableau de bord en `ConfigMap` étiqueté
+  `grafana_dashboard`.
 - Arborescence imposée : `infra/`, `app/`, `deploy/base/`, `deploy/overlays/dev/`,
   `deploy/overlays/prod/`, `deploy/argocd/`, `deploy/plateforme/`.
 - Les versions de charts et de providers sont fixées dans le mémo du cours : ne pas en proposer

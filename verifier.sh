@@ -13,6 +13,7 @@
 # Tout le script est dans des fonctions, appelées par la dernière ligne : un téléchargement
 # interrompu n'exécute rien.
 
+VERSION="2026-10-13"
 CTX="kind-plateforme"
 ATTENTE_SELF_HEAL="${ATTENTE_SELF_HEAL:-180}" # secondes
 ATTENTE_ALERTE="${ATTENTE_ALERTE:-240}"       # secondes
@@ -33,6 +34,14 @@ arret() {
 }
 
 verifier_prerequis() {
+  # Un outil remplacé par une fonction exportée ou un BASH_ENV fausserait toutes les cases.
+  [ -z "${BASH_ENV:-}" ] || arret "la variable BASH_ENV est définie." "Lance le script dans un terminal neuf."
+  local outil
+  for outil in git kubectl terraform tofu; do
+    if declare -F "$outil" >/dev/null 2>&1; then
+      arret "« $outil » est redéfini par une fonction du shell." "Lance le script dans un terminal neuf."
+    fi
+  done
   command -v git >/dev/null 2>&1 || arret "git est introuvable."
   command -v kubectl >/dev/null 2>&1 || arret "kubectl est introuvable."
   if command -v terraform >/dev/null 2>&1; then TF=terraform
@@ -48,7 +57,8 @@ verifier_prerequis() {
   sale="$(git status --porcelain </dev/null 2>/dev/null)"
   [ -z "$sale" ] || arret "des modifications ne sont pas commitées :" "$sale"
 
-  git fetch --quiet </dev/null 2>/dev/null
+  git fetch --quiet </dev/null 2>/dev/null \
+    || echo "Attention : git fetch a échoué, comparaison avec le dernier état connu du dépôt distant." >&2
   local amont
   amont="$(git rev-parse '@{u}' </dev/null 2>/dev/null)" \
     || arret "la branche courante n'a pas de branche distante." "Pousse-la : git push -u origin $(git branch --show-current </dev/null)"
@@ -66,7 +76,8 @@ case_1() {
   printf '%s\n' "$etat" | grep -q 'helm_release\.' \
     || { RAISON="aucune release Helm dans le state Terraform (infra/)"; return 1; }
   local dispo
-  dispo="$(k -n argocd get deploy argocd-server -o jsonpath='{.status.availableReplicas}')"
+  dispo="$(k -n argocd get deploy -l app.kubernetes.io/component=server -o jsonpath='{.items[*].status.availableReplicas}')"
+  dispo="${dispo%% *}"
   [ "${dispo:-0}" -ge 1 ] 2>/dev/null \
     || { RAISON="argocd-server n'est pas disponible dans le cluster $CTX"; return 1; }
 }
@@ -74,9 +85,9 @@ case_1() {
 case_2() {
   [ -n "$(suivis 'infra/modules/*/*.tf')" ] \
     || { RAISON="aucun module dans infra/modules/ (ou il n'est pas commité)"; return 1; }
-  suivis 'infra/*.tf' | while IFS= read -r f; do grep -Eq '^[[:space:]]*module[[:space:]]+"' "$f" && echo oui; done | grep -q oui \
-    || { RAISON="aucun bloc module dans les fichiers de infra/"; return 1; }
-  [ -n "$(suivis 'infra/*.tfvars')" ] \
+  git grep -qE '^[[:space:]]*module[[:space:]]+"' -- 'infra/*.tf' ':(exclude)infra/modules' </dev/null 2>/dev/null \
+    || { RAISON="aucun bloc module dans les fichiers de infra/ (hors infra/modules/)"; return 1; }
+  [ -n "$(suivis 'infra/*.tfvars' 'infra/*.tfvars.json')" ] \
     || { RAISON="aucun fichier .tfvars commité dans infra/"; return 1; }
 }
 
@@ -105,7 +116,7 @@ case_4() {
     dispo="${apres#* }"
     if [ -n "$uid" ] && [ "$uid" != "$avant" ] && [ "${dispo:-0}" -ge 1 ] 2>/dev/null; then return 0; fi
   done
-  RAISON="le déploiement api supprimé n'a pas été recréé par ArgoCD en ${ATTENTE_SELF_HEAL} s. Pour le restaurer : kubectl apply -k deploy/overlays/dev"
+  RAISON="le déploiement api supprimé n'a pas été recréé par ArgoCD en ${ATTENTE_SELF_HEAL} s. Pour le restaurer : kubectl --context kind-plateforme apply -k deploy/overlays/dev"
   return 1
 }
 
@@ -113,8 +124,12 @@ case_4() {
 tag_dev() {
   sed -n 's/^[[:space:]]*newTag:[[:space:]]*//p' "$KUSTOMIZATION_DEV" 2>/dev/null | tr -d "\"'\r" | head -n 1
 }
+# La ligne telle qu'écrite : kustomize met entre guillemets un tag fait seulement de chiffres.
+ligne_tag() {
+  grep -m 1 'newTag:' "$KUSTOMIZATION_DEV" 2>/dev/null | tr -d '\r' | sed 's/^[[:space:]]*//'
+}
 commit_du_tag() {
-  git log -1 --format="$2" -S"newTag: $1" -- "$KUSTOMIZATION_DEV" </dev/null 2>/dev/null
+  git log -1 --format="$1" -S"$(ligne_tag)" -- "$KUSTOMIZATION_DEV" </dev/null 2>/dev/null
 }
 
 case_5() {
@@ -122,7 +137,7 @@ case_5() {
   tag="$(tag_dev)"
   [ -n "$tag" ] || { RAISON="aucun newTag dans $KUSTOMIZATION_DEV"; return 1; }
   [ "$tag" != "initial" ] || { RAISON="le tag de dev est encore « initial » : le pipeline n'a jamais déployé"; return 1; }
-  auteur="$(commit_du_tag "$tag" %an)"
+  auteur="$(commit_du_tag %an)"
   [ "$auteur" = "pipeline-ci" ] \
     || { RAISON="le tag « $tag » a été écrit dans git par « $auteur », attendu « pipeline-ci »"; return 1; }
   image="$(k -n dev get deploy api -o jsonpath='{.spec.template.spec.containers[0].image}')"
@@ -150,11 +165,7 @@ case_6() {
 }
 
 case_7() {
-  local f trouve=""
-  for f in $(git grep -l 'grafana_dashboard' -- deploy </dev/null 2>/dev/null); do
-    grep -q 'http_requests_total' "$f" && trouve="$f"
-  done
-  [ -n "$trouve" ] \
+  git grep -q --all-match -e 'grafana_dashboard' -e 'http_requests_total' -- deploy </dev/null 2>/dev/null \
     || { RAISON="aucun ConfigMap commité sous deploy/ avec l'étiquette grafana_dashboard et une requête sur http_requests_total"; return 1; }
   k get configmap -A -l grafana_dashboard -o jsonpath='{range .items[*]}{.data}{end}' | grep -q 'http_requests_total' \
     || { RAISON="le tableau de bord n'est pas dans le cluster (ArgoCD l'a-t-il synchronisé ?)"; return 1; }
@@ -175,13 +186,43 @@ etat_alerte() {
     | sed 's/"state":"\([a-z]*\)"/\1/' | head -n 1
 }
 
+pods_api() { k -n dev get pods -l app=api -o jsonpath='{.items[*].metadata.name}'; }
+chaos_pod() { k get --raw "/api/v1/namespaces/dev/pods/http:$1:8080/proxy/chaos?erreurs=$2"; }
+
+# Le chaos est réglé pod par pod : à travers le Service, le retrait pourrait tomber sur un autre
+# pod que l'injection. Le retrait est réessayé, et fait même si le script est interrompu.
+PODS_CHAOS=""
+remise_a_zero() {
+  local pod essai ok
+  for pod in $PODS_CHAOS; do
+    ok=0
+    for essai in 1 2 3; do
+      if chaos_pod "$pod" 0 >/dev/null; then ok=1; break; fi
+      [ "$essai" = 3 ] || sleep 1
+    done
+    [ "$ok" = 1 ] || echo "ATTENTION : le pod $pod est peut-être resté à 100 % d'erreurs. Remets-le à zéro avec /chaos?erreurs=0."
+  done
+  PODS_CHAOS=""
+}
+interrompu() { remise_a_zero >&2; exit 130; }
+
 case_8() {
   k get --raw "$PROMETHEUS/api/v1/rules" | grep -q '"name":"BudgetErreurApi"' \
     || { RAISON="aucune alerte BudgetErreurApi chargée dans Prometheus (namespace supervision)"; return 1; }
   [ "$(etat_alerte)" != "firing" ] \
     || { RAISON="l'alerte BudgetErreurApi est déjà déclenchée avant le test : attends qu'elle retombe (2 à 3 minutes) et relance"; return 1; }
-  k get --raw "$API_DEV/chaos?erreurs=1" >/dev/null \
-    || { RAISON="impossible de joindre /chaos sur le service api de dev"; return 1; }
+  PODS_CHAOS="$(pods_api)"
+  [ -n "$PODS_CHAOS" ] || { RAISON="aucun pod de l'API dans dev"; return 1; }
+  trap interrompu INT TERM
+  local pod avertissement
+  for pod in $PODS_CHAOS; do
+    if ! chaos_pod "$pod" 1 >/dev/null; then
+      avertissement="$(remise_a_zero)"
+      trap - INT TERM
+      RAISON="impossible de joindre /chaos sur le pod $pod de dev${avertissement:+. $avertissement}"
+      return 1
+    fi
+  done
   local ecoule=0 resultat=1
   while [ "$ecoule" -lt "$ATTENTE_ALERTE" ]; do
     for _ in 1 2 3 4 5; do k get --raw "$API_DEV/" >/dev/null; done
@@ -189,26 +230,28 @@ case_8() {
     sleep "$INTERVALLE"
     ecoule=$((ecoule + INTERVALLE))
   done
-  k get --raw "$API_DEV/chaos?erreurs=0" >/dev/null
+  avertissement="$(remise_a_zero)"
+  trap - INT TERM
+  if [ -n "$avertissement" ]; then
+    RAISON="$avertissement"
+    return 1
+  fi
   [ "$resultat" = 0 ] \
     || RAISON="100 % d'erreurs injectées pendant ${ATTENTE_ALERTE} s, l'alerte BudgetErreurApi ne s'est pas déclenchée"
   return "$resultat"
 }
 
 case_9() {
-  local wf
-  wf="$(suivis '.github/workflows/*.yml' '.github/workflows/*.yaml')"
-  [ -n "$wf" ] || { RAISON="aucun workflow dans .github/workflows/"; return 1; }
-  # shellcheck disable=SC2086
-  grep -qi 'trivy' $wf || { RAISON="aucun scan Trivy dans le workflow"; return 1; }
-  # shellcheck disable=SC2086
-  grep -Eq "exit-code:[[:space:]]*[\"']?1|--exit-code[[:space:]]+1" $wf \
+  [ -n "$(suivis '.github/workflows/*.yml' '.github/workflows/*.yaml')" ] \
+    || { RAISON="aucun workflow dans .github/workflows/"; return 1; }
+  git grep -qi 'trivy' -- .github/workflows </dev/null 2>/dev/null \
+    || { RAISON="aucun scan Trivy dans le workflow"; return 1; }
+  git grep -qE "exit-code(:[[:space:]]*[\"']?|[[:space:]]+|=)1" -- .github/workflows </dev/null 2>/dev/null \
     || { RAISON="le scan Trivy n'est pas bloquant (exit-code 1)"; return 1; }
-  local introduction deploiement tag
+  local introduction deploiement
   introduction="$(git log -1 --format=%H -G "[Tt]rivy" -- .github/workflows </dev/null 2>/dev/null)"
-  tag="$(tag_dev)"
-  deploiement="$(commit_du_tag "$tag" %H)"
-  [ -n "$deploiement" ] && [ "$(commit_du_tag "$tag" %an)" = "pipeline-ci" ] \
+  deploiement="$(commit_du_tag %H)"
+  [ -n "$deploiement" ] && [ "$(commit_du_tag %an)" = "pipeline-ci" ] \
     || { RAISON="l'image de dev n'a pas été déployée par le pipeline"; return 1; }
   [ "$introduction" != "$deploiement" ] && git merge-base --is-ancestor "$introduction" "$deploiement" </dev/null 2>/dev/null \
     || { RAISON="l'image de dev a été déployée avant la dernière modification du scan : pousse un commit dans app/ pour qu'elle passe le scan"; return 1; }
@@ -245,6 +288,7 @@ ORDRE="1 2 3 5 6 7 9 10 8 4"
 main() {
   verifier_prerequis
   echo "Vérification de la plateforme (cluster $CTX). Compte deux à quatre minutes."
+  echo "Outils : $(command -v kubectl) $(command -v "$TF") $(command -v git)"
   echo
   local n code="" points=0 libelle ok depot commit
   for n in $ORDRE; do
@@ -267,7 +311,10 @@ main() {
     fi
     n=$((n + 1))
   done
-  depot="$(git remote get-url origin </dev/null 2>/dev/null)"
+  # Adresse https sans identifiant ni jeton, même pour un dépôt cloné en SSH.
+  depot="$(git remote get-url origin </dev/null 2>/dev/null \
+    | sed -e 's#^git@github\.com:#https://github.com/#' -e 's#^ssh://git@github\.com/#https://github.com/#' \
+          -e 's#^\(https*://\)[^/@]*@#\1#' -e 's#\.git$##')"
   commit="$(git rev-parse --short=7 HEAD </dev/null)"
   echo
   echo "Dépôt : $depot @ $commit"
@@ -275,7 +322,7 @@ main() {
   echo "Score : $points/20"
   echo "Code : $code"
   echo
-  echo "Relevé : $code $depot $commit"
+  echo "Relevé : $code $depot $commit v$VERSION"
 }
 
 main "$@"

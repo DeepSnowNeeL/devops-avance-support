@@ -90,3 +90,6 @@ ce qui est vérifié, c'est ce qui est dans git.
 | Répertoires du dépôt | `infra/`, `app/`, `deploy/base/`, `deploy/overlays/dev/`, `deploy/overlays/prod/`, `deploy/argocd/`, `deploy/plateforme/` |
 | Auteur des commits du pipeline | `pipeline-ci` |
 | Secret consommé par l'application | `api-secret`, clé `JETON` |
+| Namespace de la supervision | `supervision` |
+| Tableau de bord Grafana | un `ConfigMap` étiqueté `grafana_dashboard: "1"`, commité sous `deploy/` |
+| Alerte du SLO | `BudgetErreurApi` |
