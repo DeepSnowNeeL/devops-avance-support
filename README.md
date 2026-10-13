@@ -21,6 +21,18 @@ cp /tmp/support/app/* app/
 
 Elle écoute sur le port **8080**.
 
+## Les règles d'usage de l'IA (`racine/`)
+
+`AGENTS.md` et `CLAUDE.md` sont à copier **à la racine de ton dépôt** :
+
+```bash
+cp /tmp/support/racine/AGENTS.md /tmp/support/racine/CLAUDE.md .
+```
+
+Les assistants de code (Claude Code, Copilot, Cursor, Codex...) les lisent automatiquement.
+Ils leur demandent de t'expliquer les choses plutôt que de construire la plateforme à ta place :
+c'est la règle du cours, et tu seras interrogé sur ta plateforme.
+
 ## Le script de vérification (`verifier.sh`)
 
 Depuis **la racine de ton dépôt**, cluster démarré, tout commité et poussé :
