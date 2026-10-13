@@ -47,24 +47,33 @@ Il affiche une ligne par case de la grille, puis ton score et un code de dix chi
 [ OK ]   1. Cluster et ArgoCD issus de Terraform
 [ECHEC]  3. Application en dev et prod par ArgoCD
          l'application api-dev est « introuvable », attendu « Synced Healthy »
-[ -- ]   7. Tableau de bord RED (seconde journée)
 ...
 Score : 4/20
 Code : 1100000000
+
+Relevé : 1100000000 https://github.com/<toi>/<ton-depot>.git a1b2c3d
 ```
 
 - `[ OK ]` : la case est validée.
 - `[ECHEC]` : elle ne l'est pas, la ligne suivante dit pourquoi.
-- `[ -- ]` : la case n'est pas encore vérifiée par cette version du script.
+- Les cases des TP que tu n'as pas encore faits sont en `[ECHEC]` : c'est normal.
+- La dernière ligne, le **relevé**, est ce que le formateur recopie.
 
 Lance-le aussi souvent que tu veux. Pour la note, tu le lances devant le formateur.
 
 ### Ce que fait le script
 
 Il **lit** ton dépôt et ton cluster. Il ne modifie rien dans ton dépôt. Dans le cluster, il
-fait une seule action : il supprime le déploiement `api` du namespace `dev`, pour constater
-qu'ArgoCD le recrée. Si ArgoCD ne le recrée pas, le script t'indique la commande pour le
-restaurer.
+fait trois actions :
+
+- il supprime le déploiement `api` de `dev`, pour constater qu'ArgoCD le recrée. Sinon, il
+  t'indique la commande pour le restaurer ;
+- il règle l'API de `dev` à 100 % d'erreurs le temps que l'alerte `BudgetErreurApi` se
+  déclenche, puis la remet à 0 % ;
+- il tente de créer deux pods **en essai à blanc** (`--dry-run=server`) : rien n'est créé.
+
+Il dure deux à quatre minutes. Après un passage, l'alerte met deux à trois minutes à retomber :
+attends avant de le relancer.
 
 Il refuse de démarrer si ton dépôt contient des modifications non commitées ou non poussées :
 ce qui est vérifié, c'est ce qui est dans git.
