@@ -166,9 +166,9 @@ case_6() {
 
 case_7() {
   git grep -q --all-match -e 'grafana_dashboard' -e 'http_requests_total' -- deploy </dev/null 2>/dev/null \
-    || { RAISON="aucun ConfigMap commité sous deploy/ avec l'étiquette grafana_dashboard et une requête sur http_requests_total"; return 1; }
+    || { RAISON="aucun ConfigMap commité sous deploy/ avec le label grafana_dashboard et une requête sur http_requests_total"; return 1; }
   k get configmap -A -l grafana_dashboard -o jsonpath='{range .items[*]}{.data}{end}' | grep -q 'http_requests_total' \
-    || { RAISON="le tableau de bord n'est pas dans le cluster (ArgoCD l'a-t-il synchronisé ?)"; return 1; }
+    || { RAISON="le dashboard n'est pas dans le cluster (ArgoCD l'a-t-il synchronisé ?)"; return 1; }
   local dispo
   dispo="$(k -n supervision get deploy -l app.kubernetes.io/name=grafana -o jsonpath='{.items[*].status.availableReplicas}')"
   [ "${dispo:-0}" -ge 1 ] 2>/dev/null \
@@ -275,11 +275,11 @@ Module et variables Terraform
 Application en dev et prod par ArgoCD
 Self-heal : un déploiement supprimé revient
 Déploiement par le pipeline
-Secret scellé dans git
-Tableau de bord RED
+SealedSecret dans git
+Dashboard RED
 SLO et alerte
 Scan d'images bloquant
-Politique d'admission"
+Admission policy"
 # Ordre d'évaluation : les cases qui agissent sur la plateforme passent en dernier (8 injecte
 # des erreurs, 4 supprime un déploiement), pour que leur échec ne fasse pas tomber les autres.
 # L'affichage reste dans l'ordre de la grille.
@@ -311,7 +311,7 @@ main() {
     fi
     n=$((n + 1))
   done
-  # Adresse https sans identifiant ni jeton, même pour un dépôt cloné en SSH.
+  # Adresse https sans identifiant ni token, même pour un dépôt cloné en SSH.
   depot="$(git remote get-url origin </dev/null 2>/dev/null \
     | sed -e 's#^git@github\.com:#https://github.com/#' -e 's#^ssh://git@github\.com/#https://github.com/#' \
           -e 's#^\(https*://\)[^/@]*@#\1#' -e 's#\.git$##')"

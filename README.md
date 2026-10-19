@@ -15,7 +15,7 @@ cp /tmp/support/app/* app/
 | Route | Rôle |
 |---|---|
 | `/` | réponse JSON : nom du service, version, présence du secret `JETON` |
-| `/healthz` | sonde de disponibilité |
+| `/healthz` | readiness probe |
 | `/metrics` | métriques Prometheus : `http_requests_total`, `http_request_duration_seconds` |
 | `/chaos?erreurs=0.3&latence=500` | règle le taux d'erreurs (0 à 1) et la latence ajoutée (en ms) |
 
@@ -91,5 +91,5 @@ ce qui est vérifié, c'est ce qui est dans git.
 | Auteur des commits du pipeline | `pipeline-ci` |
 | Secret consommé par l'application | `api-secret`, clé `JETON` |
 | Namespace de la supervision | `supervision` |
-| Tableau de bord Grafana | un `ConfigMap` étiqueté `grafana_dashboard: "1"`, commité sous `deploy/` |
+| Dashboard Grafana | un `ConfigMap` avec le label `grafana_dashboard: "1"`, commité sous `deploy/` |
 | Alerte du SLO | `BudgetErreurApi` |

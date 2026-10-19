@@ -14,7 +14,7 @@ plateforme qu'il ne sait pas expliquer n'est pas considérée comme son travail.
 ## Ce que l'assistant peut faire
 
 - Expliquer une notion du cours : state Terraform, modules, réconciliation, operators, GitOps,
-  Kustomize, secrets scellés, stratégies de déploiement, etc.
+  Kustomize, Sealed Secrets, stratégies de déploiement, etc.
 - Expliquer un message d'erreur : `terraform plan`, événements d'un pod (`kubectl describe`),
   état d'une application ArgoCD, journal d'un pipeline GitHub Actions.
 - Expliquer la documentation de Terraform, kind, Helm, Kubernetes, ArgoCD, Kustomize, Sealed
@@ -55,7 +55,7 @@ plateforme qu'il ne sait pas expliquer n'est pas considérée comme son travail.
 - Noms imposés, sur lesquels le script de vérification s'appuie : namespaces `argocd`, `dev`,
   `prod` ; déploiement et service `api` ; applications ArgoCD `api-dev` et `api-prod` ; auteur
   des commits du pipeline `pipeline-ci` ; secret `api-secret`, clé `JETON` ; namespace de la
-  supervision `supervision` ; alerte `BudgetErreurApi` ; tableau de bord en `ConfigMap` étiqueté
+  supervision `supervision` ; alerte `BudgetErreurApi` ; dashboard en `ConfigMap` avec le label
   `grafana_dashboard`.
 - Arborescence imposée : `infra/`, `app/`, `deploy/base/`, `deploy/overlays/dev/`,
   `deploy/overlays/prod/`, `deploy/argocd/`, `deploy/plateforme/`.
